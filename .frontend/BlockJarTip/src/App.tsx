@@ -32,6 +32,19 @@ type TipHistoryItem = {
   message: string
 }
 
+type FeedbackModalState = {
+  isOpen: boolean
+  variant: 'success' | 'error'
+  title: string
+  message: string
+}
+
+type LoadingModalState = {
+  isOpen: boolean
+  title: string
+  message: string
+}
+
 const readDeployments = (): DeploymentMap => {
   try {
     const raw = window.localStorage.getItem(deploymentsStorageKey)
@@ -101,24 +114,51 @@ function App() {
     null,
   )
   const [isDeploying, setIsDeploying] = useState(false)
-  const [deployStatus, setDeployStatus] = useState('')
   const [usdValue, setUsdValue] = useState('')
   const [tipMessage, setTipMessage] = useState('')
   const [ethUsdPrice, setEthUsdPrice] = useState<number | null>(null)
-  const [priceStatus, setPriceStatus] = useState('idle')
-  const [submitStatus, setSubmitStatus] = useState('')
   const [showThankYou, setShowThankYou] = useState(false)
   const [tipSuccessHash, setTipSuccessHash] = useState<`0x${string}` | null>(null)
   const [merchantOwner, setMerchantOwner] = useState<`0x${string}` | null>(null)
   const [merchantBalance, setMerchantBalance] = useState<bigint | null>(null)
-  const [withdrawStatus, setWithdrawStatus] = useState('')
   const [isWithdrawing, setIsWithdrawing] = useState(false)
   const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>('home')
   const [historySort, setHistorySort] = useState<'desc' | 'asc'>('desc')
   const [tipsHistory, setTipsHistory] = useState<TipHistoryItem[]>([])
   const [historyStatus, setHistoryStatus] = useState('')
+  const [feedbackModal, setFeedbackModal] = useState<FeedbackModalState>({
+    isOpen: false,
+    variant: 'success',
+    title: '',
+    message: '',
+  })
+  const [loadingModal, setLoadingModal] = useState<LoadingModalState>({
+    isOpen: false,
+    title: '',
+    message: '',
+  })
 
   const { writeContractAsync, isPending: isSigning } = useWriteContract()
+
+  const showFeedbackModal = (
+    variant: 'success' | 'error',
+    title: string,
+    message: string,
+  ) => {
+    setFeedbackModal({ isOpen: true, variant, title, message })
+  }
+
+  const closeFeedbackModal = () => {
+    setFeedbackModal((prev) => ({ ...prev, isOpen: false }))
+  }
+
+  const showLoadingModal = (title: string, message: string) => {
+    setLoadingModal({ isOpen: true, title, message })
+  }
+
+  const closeLoadingModal = () => {
+    setLoadingModal((prev) => ({ ...prev, isOpen: false }))
+  }
 
   const query = useMemo(() => {
     const params = new URLSearchParams(window.location.search)
@@ -184,6 +224,11 @@ function App() {
   }, [address, isConnected, chainId])
 
   useEffect(() => {
+    if (!connectError?.message) return
+    showFeedbackModal('error', 'Wallet Connection Error', connectError.message)
+  }, [connectError])
+
+  useEffect(() => {
     if (!address || !isConnected) return
 
     const syncFromLocalDb = () => {
@@ -225,7 +270,10 @@ function App() {
 
     const resolvePendingDeployment = async () => {
       try {
-        setDeployStatus(`Deployment pending confirmation: ${pendingDeployHash}`)
+        showLoadingModal(
+          'Deployment Pending',
+          'Waiting for on-chain confirmation of your merchant contract...',
+        )
         const receipt = await publicClient.waitForTransactionReceipt({
           hash: pendingDeployHash,
         })
@@ -238,19 +286,30 @@ function App() {
           clearPendingDeployment(chainId, address)
           setMerchantContract(deployedAddress)
           setPendingDeployHash(null)
-          setDeployStatus(`Contract deployed: ${deployedAddress}`)
+          showFeedbackModal(
+            'success',
+            'Contract Deployed',
+            `Your contract is live at ${deployedAddress}.`,
+          )
         } else {
           clearPendingDeployment(chainId, address)
           setPendingDeployHash(null)
-          setDeployStatus('Deployment failed on-chain.')
+          showFeedbackModal(
+            'error',
+            'Deployment Failed',
+            'The deployment transaction failed on-chain.',
+          )
         }
       } catch {
         if (active) {
-          setDeployStatus(
-            'Could not confirm pending deployment yet. Keep this page open.',
+          showFeedbackModal(
+            'error',
+            'Confirmation Error',
+            'Could not confirm pending deployment yet. Keep this page open and retry.',
           )
         }
       } finally {
+        closeLoadingModal()
         if (active) {
           setIsDeploying(false)
         }
@@ -462,25 +521,40 @@ function App() {
 
   const deployContract = async () => {
     if (!isConnected || !address) {
-      setDeployStatus('Connect MetaMask to deploy your contract.')
+      showFeedbackModal('error', 'Wallet Required', 'Connect MetaMask to deploy your contract.')
       return
     }
     if (merchantContract) {
-      setDeployStatus('This wallet already has a deployed contract.')
+      showFeedbackModal(
+        'error',
+        'Deployment Blocked',
+        'This wallet already has a deployed contract.',
+      )
       return
     }
     if (isDeploying || pendingDeployHash) {
-      setDeployStatus('Deployment already pending for this wallet.')
+      showFeedbackModal(
+        'error',
+        'Deployment Pending',
+        'A deployment is already pending for this wallet.',
+      )
       return
     }
     if (!walletClient || !publicClient) {
-      setDeployStatus('Wallet client unavailable. Reconnect and try again.')
+      showFeedbackModal(
+        'error',
+        'Wallet Client Unavailable',
+        'Reconnect your wallet and try again.',
+      )
       return
     }
 
     try {
       setIsDeploying(true)
-      setDeployStatus('Waiting wallet confirmation for deployment...')
+      showLoadingModal(
+        'Deploying Contract',
+        'Confirm the transaction in your wallet to deploy your merchant contract.',
+      )
       const deployHash = await walletClient.deployContract({
         abi: tipAbi,
         bytecode: tipBytecode,
@@ -490,45 +564,47 @@ function App() {
 
       savePendingDeployment(chainId, address, deployHash)
       setPendingDeployHash(deployHash)
-      setDeployStatus(`Deployment submitted: ${deployHash}`)
     } catch {
+      closeLoadingModal()
       setIsDeploying(false)
-      setDeployStatus('Deployment canceled or failed.')
+      showFeedbackModal('error', 'Deployment Failed', 'Deployment was canceled or failed.')
     }
   }
 
   const loadPrice = async () => {
     if (!isConnected) {
-      setPriceStatus('Connect MetaMask to continue.')
+      showFeedbackModal('error', 'Wallet Required', 'Connect MetaMask to continue.')
       return
     }
 
-    setPriceStatus('Loading ETH price...')
+    showLoadingModal('Fetching Price', 'Loading the latest ETH/USD quote...')
     try {
       const price = await loadEthUsdQuote()
       setEthUsdPrice(price)
-      setPriceStatus(`1 ETH = $${price.toFixed(2)} USD`)
+      showFeedbackModal('success', 'Price Updated', `1 ETH = $${price.toFixed(2)} USD`)
     } catch {
-      setPriceStatus('Could not load ETH price. Try again.')
+      showFeedbackModal('error', 'Price Error', 'Could not load ETH price. Try again.')
+    } finally {
+      closeLoadingModal()
     }
   }
 
   const submitTip = async () => {
     if (!isConnected) {
-      setSubmitStatus('Connect MetaMask to continue.')
+      showFeedbackModal('error', 'Wallet Required', 'Connect MetaMask to continue.')
       return
     }
     if (!targetContract) {
-      setSubmitStatus('Invalid merchant contract in URL.')
+      showFeedbackModal('error', 'Invalid Contract', 'Invalid merchant contract in URL.')
       return
     }
     if (!tipInEth || tipInEth <= 0) {
-      setSubmitStatus('Set a valid USD amount first.')
+      showFeedbackModal('error', 'Invalid Amount', 'Set a valid USD amount first.')
       return
     }
 
     try {
-      setSubmitStatus('Waiting wallet confirmation...')
+      showLoadingModal('Submitting Tip', 'Confirm and wait for tip transaction confirmation...')
       const valueInWei = parseEther(tipInEth.toFixed(18))
       const hash = await writeContractAsync({
         address: targetContract,
@@ -539,45 +615,52 @@ function App() {
       })
 
       if (!publicClient) {
-        setSubmitStatus(`Transaction sent: ${hash}`)
+        showFeedbackModal('success', 'Tip Sent', `Transaction submitted: ${hash}`)
         return
       }
-
-      setSubmitStatus('Transaction submitted. Waiting for confirmation...')
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
 
       if (receipt.status !== 'success') {
-        setSubmitStatus('Transaction reverted on-chain.')
+        showFeedbackModal('error', 'Tip Failed', 'Transaction reverted on-chain.')
         return
       }
 
       setTipSuccessHash(hash)
       setShowThankYou(true)
-      setSubmitStatus('Tip paid successfully.')
+      showFeedbackModal('success', 'Tip Paid', 'Tip paid successfully.')
       setUsdValue('')
       setTipMessage('')
     } catch {
-      setSubmitStatus('Transaction rejected or failed.')
+      showFeedbackModal('error', 'Tip Failed', 'Transaction rejected or failed.')
+    } finally {
+      closeLoadingModal()
     }
   }
 
   const withdrawFunds = async () => {
     if (!isConnected) {
-      setWithdrawStatus('Connect MetaMask to continue.')
+      showFeedbackModal('error', 'Wallet Required', 'Connect MetaMask to continue.')
       return
     }
     if (!merchantContract) {
-      setWithdrawStatus('Deploy your contract first.')
+      showFeedbackModal('error', 'No Contract', 'Deploy your contract first.')
       return
     }
     if (!isMerchantOwner) {
-      setWithdrawStatus('Only the contract owner can withdraw funds.')
+      showFeedbackModal(
+        'error',
+        'Permission Denied',
+        'Only the contract owner can withdraw funds.',
+      )
       return
     }
 
     try {
       setIsWithdrawing(true)
-      setWithdrawStatus('Waiting wallet confirmation for withdraw...')
+      showLoadingModal(
+        'Withdrawing Funds',
+        'Confirm and wait for withdraw transaction confirmation...',
+      )
       const hash = await writeContractAsync({
         address: merchantContract,
         abi: tipAbi,
@@ -586,22 +669,23 @@ function App() {
       })
 
       if (!publicClient) {
-        setWithdrawStatus(`Withdraw sent: ${hash}`)
+        showFeedbackModal('success', 'Withdraw Sent', `Transaction submitted: ${hash}`)
         return
       }
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       if (receipt.status !== 'success') {
-        setWithdrawStatus('Withdraw reverted on-chain.')
+        showFeedbackModal('error', 'Withdraw Failed', 'Transaction reverted on-chain.')
         return
       }
 
-      setWithdrawStatus(`Withdraw successful: ${hash}`)
+      showFeedbackModal('success', 'Withdraw Successful', `Funds withdrawn: ${hash}`)
       await refreshMerchantFunds()
     } catch {
-      setWithdrawStatus('Withdraw canceled or failed.')
+      showFeedbackModal('error', 'Withdraw Failed', 'Withdraw canceled or failed.')
     } finally {
       setIsWithdrawing(false)
+      closeLoadingModal()
     }
   }
 
@@ -746,7 +830,6 @@ function App() {
                     ? 'Deployment in progress...'
                     : 'Deploy My Tip Contract'}
                 </button>
-                {deployStatus && <p className="status-text">{deployStatus}</p>}
               </div>
             )}
 
@@ -821,8 +904,6 @@ function App() {
                     {isWithdrawing ? 'Withdrawing...' : 'Withdraw Funds'}
                   </button>
                 </div>
-
-                {withdrawStatus && <p className="status-text">{withdrawStatus}</p>}
               </div>
             )}
           </section>
@@ -929,7 +1010,6 @@ function App() {
                   onClick={() => {
                     setShowThankYou(false)
                     setTipSuccessHash(null)
-                    setSubmitStatus('')
                   }}
                 >
                   Send Another Tip
@@ -973,7 +1053,6 @@ function App() {
                   >
                     Refresh ETH Price
                   </button>
-                  <span>{priceStatus}</span>
                 </div>
 
                 {tipInEth && (
@@ -991,15 +1070,44 @@ function App() {
                 >
                   {isSigning ? 'Waiting signature...' : 'Sign Tip Transaction'}
                 </button>
-
-                {submitStatus && <p className="status-text">{submitStatus}</p>}
               </>
             )}
           </section>
         )}
-
-        {connectError?.message && <p className="error-text">{connectError.message}</p>}
       </main>
+
+      {feedbackModal.isOpen && (
+        <div className="modal-backdrop" onClick={closeFeedbackModal}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{feedbackModal.title}</h3>
+              <div className="modal-header-actions">
+                <span
+                  className={`modal-chip ${
+                    feedbackModal.variant === 'success' ? 'success' : 'error'
+                  }`}
+                >
+                  {feedbackModal.variant === 'success' ? 'SUCCESS' : 'ERROR'}
+                </span>
+                <button className="modal-close-btn" type="button" onClick={closeFeedbackModal}>
+                  X
+                </button>
+              </div>
+            </div>
+            <p>{feedbackModal.message}</p>
+          </div>
+        </div>
+      )}
+
+      {loadingModal.isOpen && (
+        <div className="modal-backdrop loading">
+          <div className="modal-card loading" onClick={(e) => e.stopPropagation()}>
+            <div className="spinner" />
+            <h3>{loadingModal.title}</h3>
+            <p>{loadingModal.message}</p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
