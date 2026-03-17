@@ -1,46 +1,735 @@
-import { useConnect, useConnection, useConnectors, useDisconnect } from 'wagmi'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
+import { type Abi, type Hex, formatEther, parseEther } from 'viem'
+import blockJarTipArtifact from './contracts/BlockJarTip.json'
+import {
+  useAccount,
+  useChainId,
+  useConnect,
+  useConnectors,
+  useDisconnect,
+  usePublicClient,
+  useWalletClient,
+  useWriteContract,
+} from 'wagmi'
+
+const tipAbi = blockJarTipArtifact.abi as Abi
+const tipBytecode = blockJarTipArtifact.bytecode as Hex
+const deploymentsStorageKey = 'blockjartip.deployments.v1'
+const pendingDeploymentsStorageKey = 'blockjartip.pendingDeployments.v1'
+const deploymentEventName = 'blockjartip:deployment-updated'
+
+type DeploymentMap = Record<string, `0x${string}`>
+type PendingDeploymentMap = Record<string, `0x${string}`>
+
+const readDeployments = (): DeploymentMap => {
+  try {
+    const raw = window.localStorage.getItem(deploymentsStorageKey)
+    if (!raw) return {}
+    return JSON.parse(raw) as DeploymentMap
+  } catch {
+    return {}
+  }
+}
+
+const readPendingDeployments = (): PendingDeploymentMap => {
+  try {
+    const raw = window.localStorage.getItem(pendingDeploymentsStorageKey)
+    if (!raw) return {}
+    return JSON.parse(raw) as PendingDeploymentMap
+  } catch {
+    return {}
+  }
+}
+
+const buildDeploymentKey = (chainId: number, owner: `0x${string}`): string =>
+  `${chainId}:${owner.toLowerCase()}`
+
+const saveDeployment = (
+  chainId: number,
+  owner: `0x${string}`,
+  contractAddress: `0x${string}`,
+): void => {
+  const next = readDeployments()
+  next[buildDeploymentKey(chainId, owner)] = contractAddress
+  window.localStorage.setItem(deploymentsStorageKey, JSON.stringify(next))
+  window.dispatchEvent(new CustomEvent(deploymentEventName))
+}
+
+const savePendingDeployment = (
+  chainId: number,
+  owner: `0x${string}`,
+  txHash: `0x${string}`,
+): void => {
+  const next = readPendingDeployments()
+  next[buildDeploymentKey(chainId, owner)] = txHash
+  window.localStorage.setItem(pendingDeploymentsStorageKey, JSON.stringify(next))
+  window.dispatchEvent(new CustomEvent(deploymentEventName))
+}
+
+const clearPendingDeployment = (chainId: number, owner: `0x${string}`): void => {
+  const next = readPendingDeployments()
+  delete next[buildDeploymentKey(chainId, owner)]
+  window.localStorage.setItem(pendingDeploymentsStorageKey, JSON.stringify(next))
+  window.dispatchEvent(new CustomEvent(deploymentEventName))
+}
 
 function App() {
-  const connection = useConnection()
-  const { connect, status, error } = useConnect()
+  const { address, isConnected } = useAccount()
+  const chainId = useChainId()
+  const { connect, isPending: isConnecting, error: connectError } = useConnect()
   const connectors = useConnectors()
   const { disconnect } = useDisconnect()
+  const { data: walletClient } = useWalletClient()
+  const publicClient = usePublicClient()
+  const pendingWatchRef = useRef<`0x${string}` | null>(null)
+
+  const [merchantContract, setMerchantContract] = useState<`0x${string}` | null>(
+    null,
+  )
+  const [pendingDeployHash, setPendingDeployHash] = useState<`0x${string}` | null>(
+    null,
+  )
+  const [isDeploying, setIsDeploying] = useState(false)
+  const [deployStatus, setDeployStatus] = useState('')
+  const [usdValue, setUsdValue] = useState('')
+  const [tipMessage, setTipMessage] = useState('')
+  const [ethUsdPrice, setEthUsdPrice] = useState<number | null>(null)
+  const [priceStatus, setPriceStatus] = useState('idle')
+  const [submitStatus, setSubmitStatus] = useState('')
+  const [showThankYou, setShowThankYou] = useState(false)
+  const [tipSuccessHash, setTipSuccessHash] = useState<`0x${string}` | null>(null)
+  const [merchantOwner, setMerchantOwner] = useState<`0x${string}` | null>(null)
+  const [merchantBalance, setMerchantBalance] = useState<bigint | null>(null)
+  const [withdrawStatus, setWithdrawStatus] = useState('')
+  const [isWithdrawing, setIsWithdrawing] = useState(false)
+
+  const { writeContractAsync, isPending: isSigning } = useWriteContract()
+
+  const query = useMemo(() => {
+    const params = new URLSearchParams(window.location.search)
+    const merchant = params.get('merchant')
+    const contract = params.get('contract')
+
+    const merchantAddress =
+      merchant && /^0x[a-fA-F0-9]{40}$/.test(merchant)
+        ? (merchant as `0x${string}`)
+        : null
+    const merchantContractAddress =
+      contract && /^0x[a-fA-F0-9]{40}$/.test(contract)
+        ? (contract as `0x${string}`)
+        : null
+
+    return {
+      merchantAddress,
+      merchantContractAddress,
+    }
+  }, [])
+
+  const receiver = query.merchantAddress
+  const targetContract = query.merchantContractAddress
+
+  const appBase = `${window.location.origin}${window.location.pathname}`
+  const userShareLink =
+    address && merchantContract
+      ? `${appBase}?merchant=${address}&contract=${merchantContract}`
+      : ''
+  const isTipPage = Boolean(targetContract)
+
+  useEffect(() => {
+    if (!address || !isConnected) {
+      setMerchantContract(null)
+      setPendingDeployHash(null)
+      return
+    }
+
+    const deployments = readDeployments()
+    const pendingDeployments = readPendingDeployments()
+    const existing = deployments[buildDeploymentKey(chainId, address)]
+    const pending = pendingDeployments[buildDeploymentKey(chainId, address)]
+    setMerchantContract(existing ?? null)
+    setPendingDeployHash(pending ?? null)
+  }, [address, isConnected, chainId])
+
+  useEffect(() => {
+    if (!address || !isConnected) return
+
+    const syncFromLocalDb = () => {
+      const deployments = readDeployments()
+      const pendingDeployments = readPendingDeployments()
+      const key = buildDeploymentKey(chainId, address)
+      setMerchantContract(deployments[key] ?? null)
+      setPendingDeployHash(pendingDeployments[key] ?? null)
+    }
+
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === deploymentsStorageKey ||
+        event.key === pendingDeploymentsStorageKey
+      ) {
+        syncFromLocalDb()
+      }
+    }
+
+    const onLocalEvent = () => {
+      syncFromLocalDb()
+    }
+
+    window.addEventListener('storage', onStorage)
+    window.addEventListener(deploymentEventName, onLocalEvent)
+
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener(deploymentEventName, onLocalEvent)
+    }
+  }, [address, isConnected, chainId])
+
+  useEffect(() => {
+    if (!address || !pendingDeployHash || !publicClient) return
+    if (pendingWatchRef.current === pendingDeployHash) return
+
+    pendingWatchRef.current = pendingDeployHash
+    let active = true
+
+    const resolvePendingDeployment = async () => {
+      try {
+        setDeployStatus(`Deployment pending confirmation: ${pendingDeployHash}`)
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: pendingDeployHash,
+        })
+
+        if (!active) return
+
+        if (receipt.status === 'success' && receipt.contractAddress) {
+          const deployedAddress = receipt.contractAddress as `0x${string}`
+          saveDeployment(chainId, address, deployedAddress)
+          clearPendingDeployment(chainId, address)
+          setMerchantContract(deployedAddress)
+          setPendingDeployHash(null)
+          setDeployStatus(`Contract deployed: ${deployedAddress}`)
+        } else {
+          clearPendingDeployment(chainId, address)
+          setPendingDeployHash(null)
+          setDeployStatus('Deployment failed on-chain.')
+        }
+      } catch {
+        if (active) {
+          setDeployStatus(
+            'Could not confirm pending deployment yet. Keep this page open.',
+          )
+        }
+      } finally {
+        if (active) {
+          setIsDeploying(false)
+        }
+        pendingWatchRef.current = null
+      }
+    }
+
+    resolvePendingDeployment()
+
+    return () => {
+      active = false
+    }
+  }, [address, chainId, pendingDeployHash, publicClient])
+
+  const tipInEth = useMemo(() => {
+    if (!usdValue || !ethUsdPrice) return null
+    const usd = Number(usdValue)
+    if (!Number.isFinite(usd) || usd <= 0) return null
+    return usd / ethUsdPrice
+  }, [usdValue, ethUsdPrice])
+
+  const isMerchantOwner =
+    Boolean(address) &&
+    Boolean(merchantOwner) &&
+    address?.toLowerCase() === merchantOwner?.toLowerCase()
+
+  const merchantBalanceUsd = useMemo(() => {
+    if (merchantBalance === null || ethUsdPrice === null) return null
+    const ethValue = Number(formatEther(merchantBalance))
+    if (!Number.isFinite(ethValue)) return null
+    return ethValue * ethUsdPrice
+  }, [merchantBalance, ethUsdPrice])
+
+  const loadEthUsdQuote = async (): Promise<number> => {
+    const response = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',
+    )
+    if (!response.ok) throw new Error('Failed to fetch price')
+    const json = (await response.json()) as { ethereum?: { usd?: number } }
+    const price = json.ethereum?.usd
+    if (!price) throw new Error('Price unavailable')
+    setEthUsdPrice(price)
+    return price
+  }
+
+  const refreshMerchantFunds = async () => {
+    if (!merchantContract || !publicClient) {
+      setMerchantOwner(null)
+      setMerchantBalance(null)
+      return
+    }
+
+    try {
+      const [ownerResult, balanceResult] = await Promise.all([
+        publicClient.readContract({
+          address: merchantContract,
+          abi: tipAbi,
+          functionName: 'owner',
+        }),
+        publicClient.getBalance({
+          address: merchantContract,
+        }),
+      ])
+
+      setMerchantOwner(ownerResult as `0x${string}`)
+      setMerchantBalance(balanceResult)
+
+      if (ethUsdPrice === null) {
+        await loadEthUsdQuote()
+      }
+    } catch {
+      // Keep previous values when refresh fails.
+    }
+  }
+
+  useEffect(() => {
+    if (!isConnected || !merchantContract) {
+      setMerchantOwner(null)
+      setMerchantBalance(null)
+      return
+    }
+
+    void refreshMerchantFunds()
+  }, [isConnected, merchantContract, publicClient])
+
+  const deployContract = async () => {
+    if (!isConnected || !address) {
+      setDeployStatus('Connect MetaMask to deploy your contract.')
+      return
+    }
+    if (merchantContract) {
+      setDeployStatus('This wallet already has a deployed contract.')
+      return
+    }
+    if (isDeploying || pendingDeployHash) {
+      setDeployStatus('Deployment already pending for this wallet.')
+      return
+    }
+    if (!walletClient || !publicClient) {
+      setDeployStatus('Wallet client unavailable. Reconnect and try again.')
+      return
+    }
+
+    try {
+      setIsDeploying(true)
+      setDeployStatus('Waiting wallet confirmation for deployment...')
+      const deployHash = await walletClient.deployContract({
+        abi: tipAbi,
+        bytecode: tipBytecode,
+        args: [address],
+        account: address,
+      })
+
+      savePendingDeployment(chainId, address, deployHash)
+      setPendingDeployHash(deployHash)
+      setDeployStatus(`Deployment submitted: ${deployHash}`)
+    } catch {
+      setIsDeploying(false)
+      setDeployStatus('Deployment canceled or failed.')
+    }
+  }
+
+  const loadPrice = async () => {
+    if (!isConnected) {
+      setPriceStatus('Connect MetaMask to continue.')
+      return
+    }
+
+    setPriceStatus('Loading ETH price...')
+    try {
+      const price = await loadEthUsdQuote()
+      setEthUsdPrice(price)
+      setPriceStatus(`1 ETH = $${price.toFixed(2)} USD`)
+    } catch {
+      setPriceStatus('Could not load ETH price. Try again.')
+    }
+  }
+
+  const submitTip = async () => {
+    if (!isConnected) {
+      setSubmitStatus('Connect MetaMask to continue.')
+      return
+    }
+    if (!targetContract) {
+      setSubmitStatus('Invalid merchant contract in URL.')
+      return
+    }
+    if (!tipInEth || tipInEth <= 0) {
+      setSubmitStatus('Set a valid USD amount first.')
+      return
+    }
+
+    try {
+      setSubmitStatus('Waiting wallet confirmation...')
+      const valueInWei = parseEther(tipInEth.toFixed(18))
+      const hash = await writeContractAsync({
+        address: targetContract,
+        abi: tipAbi,
+        functionName: 'tip',
+        args: [tipMessage.trim()],
+        value: valueInWei,
+      })
+
+      if (!publicClient) {
+        setSubmitStatus(`Transaction sent: ${hash}`)
+        return
+      }
+
+      setSubmitStatus('Transaction submitted. Waiting for confirmation...')
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+
+      if (receipt.status !== 'success') {
+        setSubmitStatus('Transaction reverted on-chain.')
+        return
+      }
+
+      setTipSuccessHash(hash)
+      setShowThankYou(true)
+      setSubmitStatus('Tip paid successfully.')
+      setUsdValue('')
+      setTipMessage('')
+    } catch {
+      setSubmitStatus('Transaction rejected or failed.')
+    }
+  }
+
+  const withdrawFunds = async () => {
+    if (!isConnected) {
+      setWithdrawStatus('Connect MetaMask to continue.')
+      return
+    }
+    if (!merchantContract) {
+      setWithdrawStatus('Deploy your contract first.')
+      return
+    }
+    if (!isMerchantOwner) {
+      setWithdrawStatus('Only the contract owner can withdraw funds.')
+      return
+    }
+
+    try {
+      setIsWithdrawing(true)
+      setWithdrawStatus('Waiting wallet confirmation for withdraw...')
+      const hash = await writeContractAsync({
+        address: merchantContract,
+        abi: tipAbi,
+        functionName: 'withdraw',
+        args: [],
+      })
+
+      if (!publicClient) {
+        setWithdrawStatus(`Withdraw sent: ${hash}`)
+        return
+      }
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') {
+        setWithdrawStatus('Withdraw reverted on-chain.')
+        return
+      }
+
+      setWithdrawStatus(`Withdraw successful: ${hash}`)
+      await refreshMerchantFunds()
+    } catch {
+      setWithdrawStatus('Withdraw canceled or failed.')
+    } finally {
+      setIsWithdrawing(false)
+    }
+  }
 
   return (
-    <>
-      <div>
-        <h2>Connection</h2>
+    <div className="page-shell">
+      <div className="bg-orb orb-a" />
+      <div className="bg-orb orb-b" />
 
-        <div>
-          status: {connection.status}
-          <br />
-          addresses: {JSON.stringify(connection.addresses)}
-          <br />
-          chainId: {connection.chainId}
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-icon">BJ</span>
+          <div>
+            <p className="brand-title">BLOCK JAR TIP</p>
+            <p className="brand-subtitle">Trustless tipping experience</p>
+          </div>
         </div>
 
-        {connection.status === 'connected' && (
-          <button type="button" onClick={() => disconnect()}>
-            Disconnect
-          </button>
-        )}
-      </div>
+        <div className="wallet-box">
+          {!isConnected ? (
+            connectors.map((connector) => (
+              <button
+                key={connector.uid}
+                className="primary-btn"
+                onClick={() => connect({ connector })}
+                type="button"
+                disabled={isConnecting}
+              >
+                {isConnecting ? 'Connecting...' : `Connect ${connector.name}`}
+              </button>
+            ))
+          ) : (
+            <>
+              <span className="wallet-chip">
+                {address?.slice(0, 6)}...{address?.slice(-4)}
+              </span>
+              <button className="ghost-btn" type="button" onClick={() => disconnect()}>
+                Disconnect
+              </button>
+            </>
+          )}
+        </div>
+      </header>
 
-      <div>
-        <h2>Connect</h2>
-        {connectors.map((connector) => (
-          <button
-            key={connector.uid}
-            onClick={() => connect({ connector })}
-            type="button"
-          >
-            {connector.name}
-          </button>
-        ))}
-        <div>{status}</div>
-        <div>{error?.message}</div>
-      </div>
-    </>
+      <main>
+        {!isTipPage && (
+          <section className="hero-card">
+            <div>
+              <p className="kicker">Next-gen creator support</p>
+              <h1>
+                Instant tips, transparent payments,
+                <br />
+                powered by Web3.
+              </h1>
+              <p className="hero-text">
+                Connect your wallet to generate your private tip profile. Anyone
+                scanning your QR goes directly to your tipping page.
+              </p>
+            </div>
+            <div className="stats-grid">
+              <div className="stat-item">
+                <p>Network</p>
+                <strong>Sepolia ETH</strong>
+              </div>
+              <div className="stat-item">
+                <p>Contract</p>
+                <strong>
+                  {merchantContract
+                    ? 'Deployed'
+                    : pendingDeployHash
+                      ? 'Deploy pending'
+                      : 'Not deployed'}
+                </strong>
+              </div>
+              <div className="stat-item">
+                <p>Wallet status</p>
+                <strong>{isConnected ? 'Connected' : 'Disconnected'}</strong>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {!isTipPage && (
+          <section className="card">
+            <h2>Your Tip Profile</h2>
+            <p>
+              To use any feature, wallet login is required. After connecting, your
+              personalized tip link and QR code are generated instantly.
+            </p>
+
+            {!isConnected && (
+              <div className="notice">
+                Please connect MetaMask to generate your link and QR code.
+              </div>
+            )}
+
+            {isConnected && address && !merchantContract && (
+              <div className="deploy-panel">
+                <p>
+                  Step 1: Deploy your own merchant contract. This is required
+                  before you can receive tips.
+                </p>
+                <button
+                  className="primary-btn"
+                  type="button"
+                  onClick={deployContract}
+                  disabled={isDeploying || Boolean(pendingDeployHash)}
+                >
+                  {isDeploying || pendingDeployHash
+                    ? 'Deployment in progress...'
+                    : 'Deploy My Tip Contract'}
+                </button>
+                {deployStatus && <p className="status-text">{deployStatus}</p>}
+              </div>
+            )}
+
+            {isConnected && address && merchantContract && (
+              <>
+                <div className="profile-grid">
+                  <div>
+                    <label htmlFor="shareLink">Your share link</label>
+                    <input id="shareLink" value={userShareLink} readOnly />
+                    <p className="hint-text">Contract: {merchantContract}</p>
+                  </div>
+                  <div className="qr-wrap">
+                    <QRCodeSVG
+                      value={userShareLink}
+                      size={180}
+                      fgColor="#9fffd0"
+                      bgColor="transparent"
+                      level="H"
+                    />
+                  </div>
+                </div>
+
+                <div className="funds-panel">
+                  <h3>Contract Funds</h3>
+                  <div className="balance-highlight">
+                    <p className="balance-label">Available to withdraw (USD)</p>
+                    <strong>
+                      {merchantBalanceUsd !== null
+                        ? new Intl.NumberFormat('en-US', {
+                            style: 'currency',
+                            currency: 'USD',
+                            maximumFractionDigits: 2,
+                          }).format(merchantBalanceUsd)
+                        : '$-'}
+                    </strong>
+                    <p className="hint-text">
+                      {merchantBalance !== null
+                        ? `${formatEther(merchantBalance)} ETH`
+                        : '- ETH'}
+                    </p>
+                  </div>
+                  <p>
+                    Owner:{' '}
+                    <span className="mono">{merchantOwner ?? 'Loading...'}</span>
+                  </p>
+
+                  <div className="inline-actions">
+                    <button className="ghost-btn" type="button" onClick={refreshMerchantFunds}>
+                      Refresh Balance
+                    </button>
+                    <button
+                      className="primary-btn"
+                      type="button"
+                      onClick={withdrawFunds}
+                      disabled={isWithdrawing || isSigning || !isMerchantOwner}
+                    >
+                      {isWithdrawing ? 'Withdrawing...' : 'Withdraw Funds'}
+                    </button>
+                  </div>
+
+                  {withdrawStatus && <p className="status-text">{withdrawStatus}</p>}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {isTipPage && (
+          <section className="card tip-card">
+            <h2>Send a Tip</h2>
+            <p>
+              Merchant wallet: <span className="mono">{receiver ?? 'Unknown'}</span>
+            </p>
+            <p>
+              Merchant contract: <span className="mono">{targetContract}</span>
+            </p>
+            {!isConnected && (
+              <div className="notice">
+                Connect MetaMask to interact with this tipping page.
+              </div>
+            )}
+
+            {showThankYou ? (
+              <div className="thankyou-panel">
+                <h3>Thank You For Your Tip</h3>
+                <p>
+                  Your payment was confirmed on-chain and sent to the merchant
+                  contract.
+                </p>
+                {tipSuccessHash && (
+                  <p>
+                    Tx Hash: <span className="mono">{tipSuccessHash}</span>
+                  </p>
+                )}
+                <button
+                  className="primary-btn"
+                  type="button"
+                  onClick={() => {
+                    setShowThankYou(false)
+                    setTipSuccessHash(null)
+                    setSubmitStatus('')
+                  }}
+                >
+                  Send Another Tip
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="form-grid">
+                  <div>
+                    <label htmlFor="usdTip">Tip amount (USD)</label>
+                    <input
+                      id="usdTip"
+                      placeholder="e.g. 5"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={usdValue}
+                      onChange={(e) => setUsdValue(e.target.value)}
+                      disabled={!isConnected}
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="tipMessage">Message (optional)</label>
+                    <input
+                      id="tipMessage"
+                      placeholder="Great work!"
+                      value={tipMessage}
+                      onChange={(e) => setTipMessage(e.target.value)}
+                      disabled={!isConnected}
+                    />
+                  </div>
+                </div>
+
+                <div className="inline-actions">
+                  <button
+                    className="ghost-btn"
+                    type="button"
+                    onClick={loadPrice}
+                    disabled={!isConnected}
+                  >
+                    Refresh ETH Price
+                  </button>
+                  <span>{priceStatus}</span>
+                </div>
+
+                {tipInEth && (
+                  <p>
+                    Converted value: <strong>{tipInEth.toFixed(8)} ETH</strong>{' '}
+                    ({formatEther(parseEther(tipInEth.toFixed(18)))} ETH in wei)
+                  </p>
+                )}
+
+                <button
+                  className="primary-btn large"
+                  type="button"
+                  onClick={submitTip}
+                  disabled={!isConnected || isSigning}
+                >
+                  {isSigning ? 'Waiting signature...' : 'Sign Tip Transaction'}
+                </button>
+
+                {submitStatus && <p className="status-text">{submitStatus}</p>}
+              </>
+            )}
+          </section>
+        )}
+
+        {connectError?.message && <p className="error-text">{connectError.message}</p>}
+      </main>
+    </div>
   )
 }
 

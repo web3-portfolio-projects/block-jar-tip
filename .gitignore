@@ -1,0 +1,35 @@
+# Global
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+
+# Frontend (Vite)
+.frontend/BlockJarTip/node_modules/
+.frontend/BlockJarTip/dist/
+.frontend/BlockJarTip/.vite/
+.frontend/BlockJarTip/.vercel/
+
+# Hardhat
+.hardhat/node_modules/
+.hardhat/cache/
+.hardhat/artifacts/
+.hardhat/typechain-types/
+.hardhat/coverage/
+.hardhat/coverage.json
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OS
+*.swp
+*.swo

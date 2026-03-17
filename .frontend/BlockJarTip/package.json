@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "latest",
+    "qrcode.react": "^4.2.0",
     "react": "latest",
     "react-dom": "latest",
     "viem": "latest",
