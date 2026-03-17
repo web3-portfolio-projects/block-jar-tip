@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { type Abi, type Hex, formatEther, parseEther } from 'viem'
+import { type Abi, type Hex, formatEther, parseAbiItem, parseEther } from 'viem'
 import blockJarTipArtifact from './contracts/BlockJarTip.json'
 import {
   useAccount,
@@ -21,6 +21,16 @@ const deploymentEventName = 'blockjartip:deployment-updated'
 
 type DeploymentMap = Record<string, `0x${string}`>
 type PendingDeploymentMap = Record<string, `0x${string}`>
+type DashboardTab = 'home' | 'history' | 'profile' | 'funds'
+
+type TipHistoryItem = {
+  txHash: `0x${string}`
+  sender: `0x${string}`
+  amountWei: bigint
+  amountEth: number
+  amountUsd: number | null
+  message: string
+}
 
 const readDeployments = (): DeploymentMap => {
   try {
@@ -103,6 +113,10 @@ function App() {
   const [merchantBalance, setMerchantBalance] = useState<bigint | null>(null)
   const [withdrawStatus, setWithdrawStatus] = useState('')
   const [isWithdrawing, setIsWithdrawing] = useState(false)
+  const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>('home')
+  const [historySort, setHistorySort] = useState<'desc' | 'asc'>('desc')
+  const [tipsHistory, setTipsHistory] = useState<TipHistoryItem[]>([])
+  const [historyStatus, setHistoryStatus] = useState('')
 
   const { writeContractAsync, isPending: isSigning } = useWriteContract()
 
@@ -125,6 +139,24 @@ function App() {
       merchantContractAddress,
     }
   }, [])
+
+    useEffect(() => {
+      if (!isConnected) {
+        setTipsHistory([])
+        setHistoryStatus('Connect MetaMask to view tips history.')
+        return
+      }
+
+      if (activeDashboardTab !== 'history') return
+
+      void loadTipsHistory()
+    }, [
+      activeDashboardTab,
+      isConnected,
+      merchantContract,
+      publicClient,
+      ethUsdPrice,
+    ])
 
   const receiver = query.merchantAddress
   const targetContract = query.merchantContractAddress
@@ -252,6 +284,13 @@ function App() {
     return ethValue * ethUsdPrice
   }, [merchantBalance, ethUsdPrice])
 
+  const sortedTipsHistory = useMemo(() => {
+    return [...tipsHistory].sort((a, b) => {
+      if (historySort === 'desc') return a.amountWei > b.amountWei ? -1 : 1
+      return a.amountWei > b.amountWei ? 1 : -1
+    })
+  }, [tipsHistory, historySort])
+
   const loadEthUsdQuote = async (): Promise<number> => {
     const response = await fetch(
       'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',
@@ -294,6 +333,99 @@ function App() {
     }
   }
 
+  const loadTipsHistory = async () => {
+    if (!merchantContract || !publicClient) {
+      setTipsHistory([])
+      setHistoryStatus('Deploy your contract first to see tip history.')
+      return
+    }
+
+    try {
+      setHistoryStatus('Loading tips history...')
+
+      const usdPrice = ethUsdPrice ?? (await loadEthUsdQuote())
+      const tipReceivedEvent = parseAbiItem(
+        'event TipReceived(address indexed sender, uint256 amount, string message)',
+      )
+
+      const latestBlock = await publicClient.getBlockNumber()
+      const maxRange = 9500n
+
+      // Resolve contract deployment block to avoid scanning the whole chain.
+      let fromBlock = 0n
+      try {
+        let low = 0n
+        let high = latestBlock
+        let deploymentBlock = latestBlock
+
+        while (low <= high) {
+          const mid = (low + high) / 2n
+          const codeAtMid = await publicClient.getCode({
+            address: merchantContract,
+            blockNumber: mid,
+          })
+
+          if (codeAtMid && codeAtMid !== '0x') {
+            deploymentBlock = mid
+            if (mid === 0n) break
+            high = mid - 1n
+          } else {
+            low = mid + 1n
+          }
+        }
+
+        fromBlock = deploymentBlock
+      } catch {
+        // Fallback for RPCs that do not support historic code lookups.
+        fromBlock = latestBlock > maxRange ? latestBlock - maxRange : 0n
+      }
+
+      const items: TipHistoryItem[] = []
+
+      let currentFrom = fromBlock
+      while (currentFrom <= latestBlock) {
+        const currentTo =
+          currentFrom + maxRange > latestBlock
+            ? latestBlock
+            : currentFrom + maxRange
+
+        const chunkLogs = await publicClient.getLogs({
+          address: merchantContract,
+          event: tipReceivedEvent,
+          fromBlock: currentFrom,
+          toBlock: currentTo,
+        })
+
+        for (const log of chunkLogs) {
+          if (!log.transactionHash) continue
+
+          const amountWei = (log.args.amount ?? 0n) as bigint
+          const amountEth = Number(formatEther(amountWei))
+          const message = (log.args.message ?? '').toString()
+          const sender =
+            ((log.args.sender as `0x${string}` | undefined) ??
+              '0x0000000000000000000000000000000000000000') as `0x${string}`
+
+          items.push({
+            txHash: log.transactionHash,
+            sender,
+            amountWei,
+            amountEth,
+            amountUsd: Number.isFinite(amountEth) ? amountEth * usdPrice : null,
+            message,
+          })
+        }
+
+        currentFrom = currentTo + 1n
+      }
+
+      setTipsHistory(items)
+      setHistoryStatus(items.length > 0 ? `${items.length} tips found.` : 'No tips yet.')
+    } catch {
+      setHistoryStatus('Could not load tips history right now.')
+    }
+  }
+
   useEffect(() => {
     if (!isConnected || !merchantContract) {
       setMerchantOwner(null)
@@ -303,6 +435,30 @@ function App() {
 
     void refreshMerchantFunds()
   }, [isConnected, merchantContract, publicClient])
+
+  useEffect(() => {
+    if (!isConnected || !merchantContract || !publicClient) return
+
+    const unwatch = publicClient.watchContractEvent({
+      address: merchantContract,
+      abi: tipAbi,
+      eventName: 'TipReceived',
+      poll: true,
+      onLogs: () => {
+        void refreshMerchantFunds()
+        if (activeDashboardTab === 'history') {
+          void loadTipsHistory()
+        }
+      },
+      onError: () => {
+        // Silent fail keeps UI stable if RPC has temporary issues.
+      },
+    })
+
+    return () => {
+      unwatch()
+    }
+  }, [isConnected, merchantContract, publicClient, activeDashboardTab])
 
   const deployContract = async () => {
     if (!isConnected || !address) {
@@ -455,13 +611,46 @@ function App() {
       <div className="bg-orb orb-b" />
 
       <header className="topbar">
-        <div className="brand">
+        <button
+          className={`brand ${activeDashboardTab === 'home' ? 'brand-active' : ''}`}
+          type="button"
+          onClick={() => setActiveDashboardTab('home')}
+        >
           <span className="brand-icon">BJ</span>
           <div>
             <p className="brand-title">BLOCK JAR TIP</p>
             <p className="brand-subtitle">Trustless tipping experience</p>
           </div>
-        </div>
+        </button>
+
+        {!isTipPage && (
+          <nav className="nav-menu">
+            <button
+              className={`nav-btn ${activeDashboardTab === 'profile' ? 'active' : ''}`}
+              type="button"
+              onClick={() => setActiveDashboardTab('profile')}
+            >
+              <span className="nav-icon">P</span>
+              My Tip Profile
+            </button>
+            <button
+              className={`nav-btn ${activeDashboardTab === 'funds' ? 'active' : ''}`}
+              type="button"
+              onClick={() => setActiveDashboardTab('funds')}
+            >
+              <span className="nav-icon">$</span>
+              My Funds
+            </button>
+            <button
+              className={`nav-btn ${activeDashboardTab === 'history' ? 'active' : ''}`}
+              type="button"
+              onClick={() => setActiveDashboardTab('history')}
+            >
+              <span className="nav-icon">H</span>
+              Tips History
+            </button>
+          </nav>
+        )}
 
         <div className="wallet-box">
           {!isConnected ? (
@@ -490,7 +679,7 @@ function App() {
       </header>
 
       <main>
-        {!isTipPage && (
+        {!isTipPage && activeDashboardTab === 'home' && (
           <section className="hero-card">
             <div>
               <p className="kicker">Next-gen creator support</p>
@@ -527,9 +716,9 @@ function App() {
           </section>
         )}
 
-        {!isTipPage && (
+        {!isTipPage && activeDashboardTab === 'profile' && (
           <section className="card">
-            <h2>Your Tip Profile</h2>
+            <h2>My Tip Profile</h2>
             <p>
               To use any feature, wallet login is required. After connecting, your
               personalized tip link and QR code are generated instantly.
@@ -562,64 +751,146 @@ function App() {
             )}
 
             {isConnected && address && merchantContract && (
-              <>
-                <div className="profile-grid">
-                  <div>
-                    <label htmlFor="shareLink">Your share link</label>
-                    <input id="shareLink" value={userShareLink} readOnly />
-                    <p className="hint-text">Contract: {merchantContract}</p>
-                  </div>
-                  <div className="qr-wrap">
-                    <QRCodeSVG
-                      value={userShareLink}
-                      size={180}
-                      fgColor="#9fffd0"
-                      bgColor="transparent"
-                      level="H"
-                    />
-                  </div>
+              <div className="profile-grid">
+                <div>
+                  <label htmlFor="shareLink">Your share link</label>
+                  <input id="shareLink" value={userShareLink} readOnly />
+                  <p className="hint-text">Contract: {merchantContract}</p>
                 </div>
+                <div className="qr-wrap">
+                  <QRCodeSVG
+                    value={userShareLink}
+                    size={180}
+                    fgColor="#9fffd0"
+                    bgColor="transparent"
+                    level="H"
+                  />
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
-                <div className="funds-panel">
-                  <h3>Contract Funds</h3>
-                  <div className="balance-highlight">
-                    <p className="balance-label">Available to withdraw (USD)</p>
-                    <strong>
-                      {merchantBalanceUsd !== null
-                        ? new Intl.NumberFormat('en-US', {
-                            style: 'currency',
-                            currency: 'USD',
-                            maximumFractionDigits: 2,
-                          }).format(merchantBalanceUsd)
-                        : '$-'}
-                    </strong>
-                    <p className="hint-text">
-                      {merchantBalance !== null
-                        ? `${formatEther(merchantBalance)} ETH`
-                        : '- ETH'}
-                    </p>
-                  </div>
-                  <p>
-                    Owner:{' '}
-                    <span className="mono">{merchantOwner ?? 'Loading...'}</span>
+        {!isTipPage && activeDashboardTab === 'funds' && (
+          <section className="card">
+            <h2>My Funds</h2>
+            {!isConnected && (
+              <div className="notice">Connect MetaMask to view your funds.</div>
+            )}
+
+            {isConnected && !merchantContract && (
+              <div className="notice">
+                Deploy your contract first in My Tip Profile to unlock this section.
+              </div>
+            )}
+
+            {isConnected && merchantContract && (
+              <div className="funds-panel">
+                <h3>Contract Funds</h3>
+                <div className="balance-highlight">
+                  <p className="balance-label">Available to withdraw (USD)</p>
+                  <strong>
+                    {merchantBalanceUsd !== null
+                      ? new Intl.NumberFormat('en-US', {
+                          style: 'currency',
+                          currency: 'USD',
+                          maximumFractionDigits: 2,
+                        }).format(merchantBalanceUsd)
+                      : '$-'}
+                  </strong>
+                  <p className="hint-text">
+                    {merchantBalance !== null
+                      ? `${formatEther(merchantBalance)} ETH`
+                      : '- ETH'}
                   </p>
-
-                  <div className="inline-actions">
-                    <button className="ghost-btn" type="button" onClick={refreshMerchantFunds}>
-                      Refresh Balance
-                    </button>
-                    <button
-                      className="primary-btn"
-                      type="button"
-                      onClick={withdrawFunds}
-                      disabled={isWithdrawing || isSigning || !isMerchantOwner}
-                    >
-                      {isWithdrawing ? 'Withdrawing...' : 'Withdraw Funds'}
-                    </button>
-                  </div>
-
-                  {withdrawStatus && <p className="status-text">{withdrawStatus}</p>}
                 </div>
+                <p>
+                  Owner: <span className="mono">{merchantOwner ?? 'Loading...'}</span>
+                </p>
+
+                <div className="inline-actions">
+                  <button className="ghost-btn" type="button" onClick={refreshMerchantFunds}>
+                    Refresh Balance
+                  </button>
+                  <button
+                    className="primary-btn"
+                    type="button"
+                    onClick={withdrawFunds}
+                    disabled={isWithdrawing || isSigning || !isMerchantOwner}
+                  >
+                    {isWithdrawing ? 'Withdrawing...' : 'Withdraw Funds'}
+                  </button>
+                </div>
+
+                {withdrawStatus && <p className="status-text">{withdrawStatus}</p>}
+              </div>
+            )}
+          </section>
+        )}
+
+        {!isTipPage && activeDashboardTab === 'history' && (
+          <section className="card">
+            <h2>Tips History</h2>
+            {!isConnected && (
+              <div className="notice">Connect MetaMask to view your tips history.</div>
+            )}
+
+            {isConnected && !merchantContract && (
+              <div className="notice">
+                Deploy your contract first in My Tip Profile to unlock history.
+              </div>
+            )}
+
+            {isConnected && merchantContract && (
+              <>
+                <div className="inline-actions">
+                  <button className="ghost-btn" type="button" onClick={loadTipsHistory}>
+                    Refresh History
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    type="button"
+                    onClick={() =>
+                      setHistorySort((prev) => (prev === 'desc' ? 'asc' : 'desc'))
+                    }
+                  >
+                    Sort: {historySort === 'desc' ? 'Highest first' : 'Lowest first'}
+                  </button>
+                </div>
+
+                {historyStatus && <p className="hint-text">{historyStatus}</p>}
+
+                {sortedTipsHistory.length > 0 && (
+                  <div className="history-list">
+                    {sortedTipsHistory.map((tip) => (
+                      <article className="history-item" key={`${tip.txHash}-${tip.sender}`}>
+                        <div className="history-main">
+                          <p className="balance-label">Tip amount (USD)</p>
+                          <strong>
+                            {tip.amountUsd !== null
+                              ? new Intl.NumberFormat('en-US', {
+                                  style: 'currency',
+                                  currency: 'USD',
+                                  maximumFractionDigits: 2,
+                                }).format(tip.amountUsd)
+                              : '$-'}
+                          </strong>
+                          <p className="hint-text">{tip.amountEth.toFixed(8)} ETH</p>
+                        </div>
+                        <p>
+                          Sender:{' '}
+                          <span className="mono">
+                            {tip.sender.slice(0, 6)}...{tip.sender.slice(-4)}
+                          </span>
+                        </p>
+                        <p>
+                          Message:{' '}
+                          {tip.message.trim().length > 0 ? tip.message : 'No message'}
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </section>

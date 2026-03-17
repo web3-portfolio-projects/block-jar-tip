@@ -73,10 +73,66 @@ body {
   padding: 14px 16px;
 }
 
+.nav-menu {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 0 12px;
+}
+
+.nav-btn {
+  align-items: center;
+  background: rgba(3, 31, 54, 0.8);
+  border: 1px solid rgba(107, 224, 255, 0.35);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  gap: 8px;
+  padding: 9px 12px;
+}
+
+.nav-btn.active {
+  background: linear-gradient(120deg, #57d6ff, #9fffd0);
+  border-color: transparent;
+  color: #06273f;
+}
+
+.nav-icon {
+  align-items: center;
+  border: 1px solid rgba(107, 224, 255, 0.5);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 700;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.nav-btn.active .nav-icon {
+  border-color: rgba(6, 39, 63, 0.35);
+}
+
 .brand {
   align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: inherit;
+  cursor: pointer;
   display: flex;
   gap: 12px;
+  padding: 4px;
+  text-align: left;
+}
+
+.brand-active {
+  border-color: rgba(107, 224, 255, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(107, 224, 255, 0.15);
 }
 
 .brand-icon {
@@ -368,6 +424,33 @@ input:focus {
   padding: 16px;
 }
 
+.history-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.history-item {
+  background: rgba(4, 31, 52, 0.76);
+  border: 1px solid rgba(107, 224, 255, 0.28);
+  border-radius: 12px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.history-main {
+  align-items: baseline;
+  display: grid;
+  gap: 4px;
+}
+
+.history-main strong {
+  color: var(--mint);
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 1.5rem;
+}
+
 .inline-actions {
   align-items: center;
   display: flex;
@@ -399,6 +482,12 @@ input:focus {
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .nav-menu {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    margin: 0;
   }
 
   .wallet-box {
