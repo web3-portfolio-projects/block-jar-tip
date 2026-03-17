@@ -555,6 +555,7 @@ input:focus {
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
+  overflow-wrap: anywhere;
 }
 
 .status-text {
@@ -568,24 +569,144 @@ input:focus {
 }
 
 @media (max-width: 860px) {
+  .page-shell {
+    padding: 16px 14px 28px;
+  }
+
   .hero-card,
   .profile-grid {
     grid-template-columns: 1fr;
+  }
+
+  .hero-card,
+  .card {
+    padding: 16px;
   }
 
   .topbar {
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
+    padding: 12px;
   }
 
   .nav-menu {
-    flex-wrap: wrap;
     justify-content: flex-start;
     margin: 0;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .nav-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .wallet-box {
+    width: 100%;
     justify-content: flex-start;
+  }
+
+  .profile-grid {
+    align-items: stretch;
+  }
+
+  .qr-wrap {
+    min-height: 180px;
+    padding: 10px;
+  }
+
+  .inline-actions {
+    flex-wrap: wrap;
+  }
+
+  .inline-actions .primary-btn,
+  .inline-actions .ghost-btn {
+    width: 100%;
+  }
+
+  .history-item {
+    gap: 8px;
+  }
+
+  .modal-card {
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .brand {
+    width: 100%;
+  }
+
+  .brand-subtitle {
+    font-size: 0.8rem;
+  }
+
+  .wallet-box {
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .wallet-chip {
+    text-align: center;
+    width: 100%;
+  }
+
+  .wallet-box .primary-btn,
+  .wallet-box .ghost-btn {
+    width: 100%;
+  }
+
+  h1 {
+    line-height: 1.14;
+  }
+
+  .tip-card p,
+  .funds-panel p,
+  .history-item p {
+    overflow-wrap: anywhere;
+  }
+
+  input {
+    font-size: 16px;
+  }
+
+  .balance-highlight strong,
+  .history-main strong {
+    font-size: 1.3rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .page-shell {
+    padding: 12px 10px 24px;
+  }
+
+  .hero-card,
+  .card {
+    border-radius: 16px;
+    padding: 14px;
+  }
+
+  .topbar {
+    border-radius: 14px;
+  }
+
+  .brand-title {
+    font-size: 0.98rem;
+  }
+
+  .nav-btn {
+    font-size: 0.84rem;
+    padding: 8px 10px;
+  }
+
+  .modal-card {
+    border-radius: 14px;
+    padding: 14px;
   }
 }

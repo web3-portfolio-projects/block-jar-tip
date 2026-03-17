@@ -15,12 +15,8 @@ import {
 
 const tipAbi = blockJarTipArtifact.abi as Abi
 const tipBytecode = blockJarTipArtifact.bytecode as Hex
-const deploymentsStorageKey = 'blockjartip.deployments.v1'
-const pendingDeploymentsStorageKey = 'blockjartip.pendingDeployments.v1'
-const deploymentEventName = 'blockjartip:deployment-updated'
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001'
 
-type DeploymentMap = Record<string, `0x${string}`>
-type PendingDeploymentMap = Record<string, `0x${string}`>
 type DashboardTab = 'home' | 'history' | 'profile' | 'funds'
 
 type TipHistoryItem = {
@@ -30,6 +26,11 @@ type TipHistoryItem = {
   amountEth: number
   amountUsd: number | null
   message: string
+}
+
+type DeploymentRecord = {
+  contractAddress: `0x${string}` | null
+  pendingTxHash: `0x${string}` | null
 }
 
 type FeedbackModalState = {
@@ -45,56 +46,86 @@ type LoadingModalState = {
   message: string
 }
 
-const readDeployments = (): DeploymentMap => {
-  try {
-    const raw = window.localStorage.getItem(deploymentsStorageKey)
-    if (!raw) return {}
-    return JSON.parse(raw) as DeploymentMap
-  } catch {
-    return {}
-  }
+const normalizeAddress = (value: string | null | undefined): `0x${string}` | null => {
+  if (!value) return null
+  return /^0x[a-fA-F0-9]{40}$/.test(value) ? (value as `0x${string}`) : null
 }
 
-const readPendingDeployments = (): PendingDeploymentMap => {
-  try {
-    const raw = window.localStorage.getItem(pendingDeploymentsStorageKey)
-    if (!raw) return {}
-    return JSON.parse(raw) as PendingDeploymentMap
-  } catch {
-    return {}
+const getDeploymentRecord = async (
+  chainId: number,
+  owner: `0x${string}`,
+): Promise<DeploymentRecord> => {
+  const query = new URLSearchParams({
+    chainId: String(chainId),
+    walletAddress: owner,
+  })
+
+  const response = await fetch(`${apiBaseUrl}/api/deployments?${query.toString()}`)
+  if (!response.ok) {
+    throw new Error('Could not load deployment record.')
+  }
+
+  const data = (await response.json()) as {
+    contractAddress: string | null
+    pendingTxHash: string | null
+  }
+
+  return {
+    contractAddress: normalizeAddress(data.contractAddress),
+    pendingTxHash: normalizeAddress(data.pendingTxHash),
   }
 }
-
-const buildDeploymentKey = (chainId: number, owner: `0x${string}`): string =>
-  `${chainId}:${owner.toLowerCase()}`
 
 const saveDeployment = (
   chainId: number,
   owner: `0x${string}`,
   contractAddress: `0x${string}`,
-): void => {
-  const next = readDeployments()
-  next[buildDeploymentKey(chainId, owner)] = contractAddress
-  window.localStorage.setItem(deploymentsStorageKey, JSON.stringify(next))
-  window.dispatchEvent(new CustomEvent(deploymentEventName))
-}
+): Promise<void> =>
+  fetch(`${apiBaseUrl}/api/deployments`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chainId,
+      walletAddress: owner,
+      contractAddress,
+    }),
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error('Could not save deployment.')
+    }
+  })
 
 const savePendingDeployment = (
   chainId: number,
   owner: `0x${string}`,
   txHash: `0x${string}`,
-): void => {
-  const next = readPendingDeployments()
-  next[buildDeploymentKey(chainId, owner)] = txHash
-  window.localStorage.setItem(pendingDeploymentsStorageKey, JSON.stringify(next))
-  window.dispatchEvent(new CustomEvent(deploymentEventName))
-}
+): Promise<void> =>
+  fetch(`${apiBaseUrl}/api/pending-deployments`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chainId,
+      walletAddress: owner,
+      pendingTxHash: txHash,
+    }),
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error('Could not save pending deployment.')
+    }
+  })
 
-const clearPendingDeployment = (chainId: number, owner: `0x${string}`): void => {
-  const next = readPendingDeployments()
-  delete next[buildDeploymentKey(chainId, owner)]
-  window.localStorage.setItem(pendingDeploymentsStorageKey, JSON.stringify(next))
-  window.dispatchEvent(new CustomEvent(deploymentEventName))
+const clearPendingDeployment = (chainId: number, owner: `0x${string}`): Promise<void> => {
+  const query = new URLSearchParams({
+    chainId: String(chainId),
+    walletAddress: owner,
+  })
+  return fetch(`${apiBaseUrl}/api/pending-deployments?${query.toString()}`, {
+    method: 'DELETE',
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error('Could not clear pending deployment.')
+    }
+  })
 }
 
 function App() {
@@ -208,6 +239,15 @@ function App() {
       : ''
   const isTipPage = Boolean(targetContract)
 
+  const refreshDeploymentState = async (
+    walletAddress: `0x${string}`,
+    currentChainId: number,
+  ) => {
+    const record = await getDeploymentRecord(currentChainId, walletAddress)
+    setMerchantContract(record.contractAddress)
+    setPendingDeployHash(record.pendingTxHash)
+  }
+
   useEffect(() => {
     if (!address || !isConnected) {
       setMerchantContract(null)
@@ -215,51 +255,19 @@ function App() {
       return
     }
 
-    const deployments = readDeployments()
-    const pendingDeployments = readPendingDeployments()
-    const existing = deployments[buildDeploymentKey(chainId, address)]
-    const pending = pendingDeployments[buildDeploymentKey(chainId, address)]
-    setMerchantContract(existing ?? null)
-    setPendingDeployHash(pending ?? null)
+    void refreshDeploymentState(address, chainId).catch(() => {
+      showFeedbackModal(
+        'error',
+        'Database Error',
+        'Could not load deployment state from SQLite API.',
+      )
+    })
   }, [address, isConnected, chainId])
 
   useEffect(() => {
     if (!connectError?.message) return
     showFeedbackModal('error', 'Wallet Connection Error', connectError.message)
   }, [connectError])
-
-  useEffect(() => {
-    if (!address || !isConnected) return
-
-    const syncFromLocalDb = () => {
-      const deployments = readDeployments()
-      const pendingDeployments = readPendingDeployments()
-      const key = buildDeploymentKey(chainId, address)
-      setMerchantContract(deployments[key] ?? null)
-      setPendingDeployHash(pendingDeployments[key] ?? null)
-    }
-
-    const onStorage = (event: StorageEvent) => {
-      if (
-        event.key === deploymentsStorageKey ||
-        event.key === pendingDeploymentsStorageKey
-      ) {
-        syncFromLocalDb()
-      }
-    }
-
-    const onLocalEvent = () => {
-      syncFromLocalDb()
-    }
-
-    window.addEventListener('storage', onStorage)
-    window.addEventListener(deploymentEventName, onLocalEvent)
-
-    return () => {
-      window.removeEventListener('storage', onStorage)
-      window.removeEventListener(deploymentEventName, onLocalEvent)
-    }
-  }, [address, isConnected, chainId])
 
   useEffect(() => {
     if (!address || !pendingDeployHash || !publicClient) return
@@ -282,8 +290,8 @@ function App() {
 
         if (receipt.status === 'success' && receipt.contractAddress) {
           const deployedAddress = receipt.contractAddress as `0x${string}`
-          saveDeployment(chainId, address, deployedAddress)
-          clearPendingDeployment(chainId, address)
+          await saveDeployment(chainId, address, deployedAddress)
+          await clearPendingDeployment(chainId, address)
           setMerchantContract(deployedAddress)
           setPendingDeployHash(null)
           showFeedbackModal(
@@ -292,7 +300,7 @@ function App() {
             `Your contract is live at ${deployedAddress}.`,
           )
         } else {
-          clearPendingDeployment(chainId, address)
+          await clearPendingDeployment(chainId, address)
           setPendingDeployHash(null)
           showFeedbackModal(
             'error',
@@ -562,7 +570,7 @@ function App() {
         account: address,
       })
 
-      savePendingDeployment(chainId, address, deployHash)
+      await savePendingDeployment(chainId, address, deployHash)
       setPendingDeployHash(deployHash)
     } catch {
       closeLoadingModal()
