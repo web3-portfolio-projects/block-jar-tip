@@ -130,6 +130,16 @@ npm run dev
 Open:
 - `http://localhost:5173` (or the port shown in terminal)
 
+### Windows Helper Scripts
+- `install-environment.bat`: installs dependencies for `.hardhat`, `.backend`, and `.frontend/BlockJarTip`.
+- `init-project-dev.bat`: opens external CMD windows and starts backend + frontend dev servers.
+
+Quick usage:
+```bat
+install-environment.bat
+init-project-dev.bat
+```
+
 ### Mobile/LAN Testing
 Vite is configured to allow LAN access.
 Run frontend and open from your phone (same network):
@@ -268,6 +278,16 @@ npm run dev
 
 Abra:
 - `http://localhost:5173` (ou a porta exibida no terminal)
+
+### Scripts Auxiliares para Windows
+- `install-environment.bat`: instala dependências de `.hardhat`, `.backend` e `.frontend/BlockJarTip`.
+- `init-project-dev.bat`: abre janelas CMD externas e inicia os servidores de backend + frontend.
+
+Uso rápido:
+```bat
+install-environment.bat
+init-project-dev.bat
+```
 
 ### Teste em Celular (LAN)
 O Vite já está configurado para acesso na rede local.
