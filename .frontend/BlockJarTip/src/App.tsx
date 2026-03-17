@@ -16,6 +16,8 @@ import {
 const tipAbi = blockJarTipArtifact.abi as Abi
 const tipBytecode = blockJarTipArtifact.bytecode as Hex
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001'
+const metaMaskDeepLinkBase =
+  import.meta.env.VITE_METAMASK_DEEP_LINK_BASE ?? 'https://metamask.app.link/dapp/'
 
 type DashboardTab = 'home' | 'history' | 'profile' | 'funds'
 
@@ -131,12 +133,37 @@ const clearPendingDeployment = (chainId: number, owner: `0x${string}`): Promise<
 function App() {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
-  const { connect, isPending: isConnecting, error: connectError } = useConnect()
+  const { connectAsync, isPending: isConnecting, error: connectError } = useConnect()
   const connectors = useConnectors()
   const { disconnect } = useDisconnect()
   const { data: walletClient } = useWalletClient()
   const publicClient = usePublicClient()
   const pendingWatchRef = useRef<`0x${string}` | null>(null)
+
+  const injectedConnector = useMemo(
+    () =>
+      connectors.find(
+        (connector) =>
+          connector.id.toLowerCase().includes('injected') ||
+          connector.name.toLowerCase().includes('injected'),
+      ) ?? null,
+    [connectors],
+  )
+
+  const metaMaskConnector = useMemo(
+    () =>
+      connectors.find(
+        (connector) =>
+          connector.id.toLowerCase().includes('metamask') ||
+          connector.name.toLowerCase().includes('metamask'),
+      ) ?? null,
+    [connectors],
+  )
+
+  const isMobileBrowser = useMemo(
+    () => /android|iphone|ipad|ipod/i.test(navigator.userAgent),
+    [],
+  )
 
   const [merchantContract, setMerchantContract] = useState<`0x${string}` | null>(
     null,
@@ -697,6 +724,41 @@ function App() {
     }
   }
 
+  const connectWallet = async () => {
+    try {
+      const dappUrl = import.meta.env.VITE_METAMASK_DAPP_URL ?? window.location.host
+      const deepLinkTarget = dappUrl
+        .replace(/^https?:\/\//i, '')
+        .replace(/\/+$/, '')
+
+      if (injectedConnector) {
+        const injectedProvider = await injectedConnector.getProvider().catch(() => undefined)
+        if (injectedProvider) {
+          await connectAsync({ connector: injectedConnector })
+          return
+        }
+      }
+
+      if (isMobileBrowser && deepLinkTarget.length > 0) {
+        window.location.assign(`${metaMaskDeepLinkBase}${deepLinkTarget}`)
+        return
+      }
+
+      if (metaMaskConnector) {
+        await connectAsync({ connector: metaMaskConnector })
+        return
+      }
+
+      showFeedbackModal(
+        'error',
+        'No Wallet Connector',
+        'No compatible wallet connector was found in this browser.',
+      )
+    } catch {
+      // Error feedback is handled by connectError effect.
+    }
+  }
+
   return (
     <div className="page-shell">
       <div className="bg-orb orb-a" />
@@ -746,17 +808,14 @@ function App() {
 
         <div className="wallet-box">
           {!isConnected ? (
-            connectors.map((connector) => (
-              <button
-                key={connector.uid}
-                className="primary-btn"
-                onClick={() => connect({ connector })}
-                type="button"
-                disabled={isConnecting}
-              >
-                {isConnecting ? 'Connecting...' : `Connect ${connector.name}`}
-              </button>
-            ))
+            <button
+              className="primary-btn"
+              onClick={() => void connectWallet()}
+              type="button"
+              disabled={isConnecting || (!injectedConnector && !metaMaskConnector)}
+            >
+              {isConnecting ? 'Connecting...' : 'Connect Wallet'}
+            </button>
           ) : (
             <>
               <span className="wallet-chip">
@@ -818,7 +877,7 @@ function App() {
 
             {!isConnected && (
               <div className="notice">
-                Please connect MetaMask to generate your link and QR code.
+                Please connect your wallet to generate your link and QR code.
               </div>
             )}
 

@@ -1,5 +1,6 @@
 import cors from 'cors'
 import express from 'express'
+import fs from 'fs'
 import path from 'path'
 import sqlite3 from 'sqlite3'
 import { fileURLToPath } from 'url'
@@ -9,7 +10,17 @@ const __dirname = path.dirname(__filename)
 
 const app = express()
 const port = Number(process.env.PORT ?? 3001)
-const dbPath = path.join(__dirname, 'data', 'blockjartip.sqlite')
+const host = process.env.HOST ?? '0.0.0.0'
+const dataDir = path.join(__dirname, 'data')
+const dbPath = path.join(dataDir, 'blockjartip.sqlite')
+const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true })
+}
 
 sqlite3.verbose()
 const db = new sqlite3.Database(dbPath)
@@ -46,6 +57,50 @@ const normalizeHash = (value) =>
     ? value.toLowerCase()
     : null
 
+const isLanOrLocalOrigin = (origin) => {
+  try {
+    const { hostname } = new URL(origin)
+
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      return true
+    }
+
+    if (hostname.endsWith('.local')) {
+      return true
+    }
+
+    const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+    if (!ipv4) return false
+
+    const octets = ipv4.slice(1).map(Number)
+    if (octets.some((octet) => octet < 0 || octet > 255)) return false
+
+    const [a, b] = octets
+    return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)
+  } catch {
+    return false
+  }
+}
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) {
+      callback(null, true)
+      return
+    }
+
+    const isExplicitlyAllowed = corsAllowedOrigins.includes(origin)
+    const isLanOrLocal = isLanOrLocalOrigin(origin)
+
+    if (isExplicitlyAllowed || isLanOrLocal) {
+      callback(null, true)
+      return
+    }
+
+    callback(new Error('Origin not allowed by CORS.'))
+  },
+}
+
 const initDatabase = async () => {
   await run(`
     CREATE TABLE IF NOT EXISTS deployments (
@@ -68,7 +123,7 @@ const initDatabase = async () => {
   `)
 }
 
-app.use(cors())
+app.use(cors(corsOptions))
 app.use(express.json())
 
 app.get('/api/health', (_request, response) => {
@@ -190,8 +245,11 @@ app.delete('/api/pending-deployments', async (request, response) => {
 
 initDatabase()
   .then(() => {
-    app.listen(port, () => {
-      console.log(`SQLite API running on http://localhost:${port}`)
+    app.listen(port, host, () => {
+      console.log(`SQLite API running on http://${host}:${port}`)
+      console.log(
+        'CORS enabled for localhost and LAN origins. Add CORS_ALLOWED_ORIGINS for custom hosts.',
+      )
     })
   })
   .catch((error) => {

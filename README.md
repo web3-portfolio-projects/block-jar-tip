@@ -89,6 +89,10 @@ Optional only:
 ```env
 # Optional API port
 # PORT=3001
+# Optional host binding (use 0.0.0.0 for LAN)
+# HOST=0.0.0.0
+# Optional custom CORS origins (comma-separated)
+# CORS_ALLOWED_ORIGINS=https://mydomain.com,https://app.mydomain.com
 ```
 
 #### C) Frontend workspace (`.frontend/BlockJarTip/.env`)
@@ -97,6 +101,9 @@ Optional only:
 ```env
 # Optional backend API override
 # VITE_API_BASE_URL=http://localhost:3001
+# MetaMask connector metadata (recommended for smartphone deep-link flow)
+# VITE_METAMASK_DAPP_NAME=Block Jar Tip
+# VITE_METAMASK_DAPP_URL=http://192.168.X.X:5173
 ```
 
 ### How To Run The Project
@@ -221,6 +228,10 @@ Opcional:
 ```env
 # Porta opcional da API
 # PORT=3001
+# Host opcional (use 0.0.0.0 para LAN)
+# HOST=0.0.0.0
+# Origens CORS customizadas opcionais (separadas por vírgula)
+# CORS_ALLOWED_ORIGINS=https://meudominio.com,https://app.meudominio.com
 ```
 
 #### C) Workspace do frontend (`.frontend/BlockJarTip/.env`)
@@ -229,6 +240,9 @@ Opcional:
 ```env
 # Sobrescrita opcional da URL da API backend
 # VITE_API_BASE_URL=http://localhost:3001
+# Metadados do conector MetaMask (recomendado para deep-link no smartphone)
+# VITE_METAMASK_DAPP_NAME=Block Jar Tip
+# VITE_METAMASK_DAPP_URL=http://192.168.X.X:5173
 ```
 
 ### Tutorial de Execução do Projeto

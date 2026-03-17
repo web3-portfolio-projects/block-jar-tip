@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@metamask/sdk": "^0.34.0",
     "@tanstack/react-query": "latest",
     "qrcode.react": "^4.2.0",
     "react": "latest",

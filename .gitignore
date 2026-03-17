@@ -33,3 +33,4 @@ node_modules/
 # OS
 *.swp
 *.swo
+.backend/data/blockjartip.sqlite
