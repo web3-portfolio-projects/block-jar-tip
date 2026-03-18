@@ -3,6 +3,24 @@
 [![English](https://img.shields.io/badge/Language-English-0A66C2)](#english)
 [![Portuguese](https://img.shields.io/badge/Idioma-Portugues-009739)](#portugues-brasil)
 
+## Demo Steps (GIF)
+
+### Step 1 - Merchant Login + Own Contract Deploy
+![Step 1 - Merchant deploy](.assets/STEP_001.gif)
+
+User connects their wallet and deploys the contract for their own Block Jar Tip profile.
+
+### Step 2 - Payer Uses Link or QR and Sends Tip
+![Step 2 - Payer sends tip](.assets/STEP_002.gif)
+
+Another person opens the merchant link (or scans the merchant QR code) and sends a tip to that merchant contract from the opened tipping page.
+
+### Step 3 - Merchant Sees Tip, Checks Funds, and Withdraws
+![Step 3 - Merchant withdraw](.assets/STEP_003.gif)
+
+The merchant verifies the received tip (amount + message), checks the Jar Tip balance, and performs a withdraw.
+Only the wallet that deployed the contract can execute the withdraw.
+
 ---
 
 ## English
